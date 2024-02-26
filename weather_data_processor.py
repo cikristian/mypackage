@@ -1,52 +1,93 @@
-import re # Importing the regex pattern
+# These are the imports we're going to use in the weather data processing module
+import re
 import numpy as np
+import pandas as pd
+import logging
+from data_ingestion import read_from_web_CSV
+
+### START FUNCTION
 
 
-patterns = {
-    'Rainfall': r'(\d+(\.\d+)?)\s?mm',
-     'Temperature': r'(\d+(\.\d+)?)\s?C',
-    'Pollution_level': r'=\s*(-?\d+(\.\d+)?)|Pollution at \s*(-?\d+(\.\d+)?)'
-    }
+class WeatherDataProcessor:
+    def __init__(
+        self, config_params, logging_level="INFO"
+    ):  # Now we're passing in the confi_params dictionary already
+        self.weather_station_data = config_params["weather_csv_path"]
+        self.patterns = config_params["regex_patterns"]
+        self.weather_df = None  # Initialize weather_df as None or as an empty DataFrame
+        self.initialize_logging(logging_level)
 
-def extract_measurement(message):
-    """
-    Extracts a numeric measurement value from a given message string.
+    def initialize_logging(self, logging_level):
+        logger_name = __name__ + ".WeatherDataProcessor"
+        self.logger = logging.getLogger(logger_name)
+        self.logger.propagate = (
+            False  # Prevents log messages from being propagated to the root logger
+        )
 
-    The function applies regular expressions to identify and extract
-    numeric values related to different types of measurements such as
-    Rainfall, Average Temperatures, and Pollution Levels from a text message.
-    It returns the key of the matching record, and first matching value as a floating-point number.
-    
-    Parameters:
-    message (str): A string message containing the measurement information.
+        # Set logging level
+        if logging_level.upper() == "DEBUG":
+            log_level = logging.DEBUG
+        elif logging_level.upper() == "INFO":
+            log_level = logging.INFO
+        elif logging_level.upper() == "NONE":  # Option to disable logging
+            self.logger.disabled = True
+            return
+        else:
+            log_level = logging.INFO  # Default to INFO
 
-    Returns:
-    float: The extracted numeric value of the measurement if a match is found;
-           otherwise, None.
+        self.logger.setLevel(log_level)
 
-    The function uses the following patterns for extraction:
-    - Rainfall: Matches numbers (including decimal) followed by 'mm', optionally spaced.
-    - Ave_temps: Matches numbers (including decimal) followed by 'C', optionally spaced.
-    - Pollution_level: Matches numbers (including decimal) following 'Pollution at' or '='.
-    
-    Example usage:
-    extract_measurement("【2022-01-04 21:47:48】温度感应: 现在温度是 12.82C.")
-    # Returns: 'Temperature', 12.82
-    """
-    
-    for key, pattern in patterns.items(): # Loop through all of the patterns and check if it matches the pattern value.
-        match = re.search(pattern, message)
-        if match:
-            # Extract the first group that matches, which should be the measurement value if all previous matches are empty.
-            # print(match.groups()) # Uncomment this line to help you debug your regex patterns.
-            return key, float(next((x for x in match.groups() if x is not None)))
-    
-    return None, None
+        # Only add handler if not already added to avoid duplicate messages
+        if not self.logger.handlers:
+            ch = logging.StreamHandler()  # Create console handler
+            formatter = logging.Formatter(
+                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+            )
+            ch.setFormatter(formatter)
+            self.logger.addHandler(ch)
 
-# The function creates a tuple with the measurement type and value into a Pandas Series
-result = weather_station_df['Message'].apply(extract_measurement)
+    def weather_station_mapping(self):
+        self.weather_df = read_from_web_CSV(self.weather_station_data)
+        self.logger.info("Successfully loaded weather station data from the web.")
+        # Here, you can apply any initial transformations to self.weather_df if necessary.
 
-# Create separate columns for 'Measurement' and 'extracted_value' by unpacking the tuple with Lambda functions.
-weather_station_df['Measurement'] = result.apply(lambda x: x[0])
-weather_station_df['Value'] = result.apply(lambda x: x[1])
+    def extract_measurement(self, message):
+        for key, pattern in self.patterns.items():
+            match = re.search(pattern, message)
+            if match:
+                self.logger.debug(f"Measurement extracted: {key}")
+                return key, float(next((x for x in match.groups() if x is not None)))
+        self.logger.debug("No measurement match found.")
+        return None, None
 
+    def process_messages(self):
+        if self.weather_df is not None:
+            result = self.weather_df["Message"].apply(self.extract_measurement)
+            self.weather_df["Measurement"], self.weather_df["Value"] = zip(*result)
+            self.logger.info("Messages processed and measurements extracted.")
+        else:
+            self.logger.warning(
+                "weather_df is not initialized, skipping message processing."
+            )
+        return self.weather_df
+
+    def calculate_means(self):
+        if self.weather_df is not None:
+            means = self.weather_df.groupby(by=["Weather_station_ID", "Measurement"])[
+                "Value"
+            ].mean()
+            self.logger.info("Mean values calculated.")
+            return means.unstack()
+        else:
+            self.logger.warning(
+                "weather_df is not initialized, cannot calculate means."
+            )
+            return None
+
+    def process(self):
+        self.weather_station_mapping()  # Load and assign data to weather_df
+        self.process_messages()  # Process messages to extract measurements
+        self.logger.info("Data processing completed.")
+
+
+### END FUNCTION
